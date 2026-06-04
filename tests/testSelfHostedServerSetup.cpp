@@ -50,7 +50,9 @@ private:
         return credentials;
     }
 
-    void verifySshConnection(const ServerCredentials& credentials) {
+    // Takes a mutable copy: checkSshConnection() takes a non-const ref since
+    // amnezia-client #2664.
+    void verifySshConnection(ServerCredentials credentials) {
         QString sshOutput;
         ErrorCode sshError = m_coreController->installController()->checkSshConnection(credentials, sshOutput);
         QVERIFY2(sshError == ErrorCode::NoError, 
