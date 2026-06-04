@@ -39,11 +39,27 @@ python3 "$REPO_ROOT/scripts/inject_tests.py" "$CLIENT_DIR/client/CMakeLists.txt"
 
 echo "==> configuring ($GENERATOR, $BUILD_TYPE)"
 cmake_args=(-S "$CLIENT_DIR" -B "$BUILD_DIR" -G "$GENERATOR" "-DCMAKE_BUILD_TYPE=$BUILD_TYPE")
-if [[ -n "${QT_TOOLCHAIN:-}" ]]; then
+
+# Resolve Qt. install-qt-action exports QT_ROOT_DIR into the runtime env;
+# derive the toolchain file from it (the arch subdir, e.g. gcc_64, varies).
+if [[ -z "${QT_TOOLCHAIN:-}" && -n "${QT_ROOT_DIR:-}" ]]; then
+    QT_TOOLCHAIN="$QT_ROOT_DIR/lib/cmake/Qt6/qt.toolchain.cmake"
+fi
+if [[ -n "${QT_TOOLCHAIN:-}" && -f "$QT_TOOLCHAIN" ]]; then
+    echo "    using Qt toolchain: $QT_TOOLCHAIN"
     cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=$QT_TOOLCHAIN")
+elif [[ -n "${QT_ROOT_DIR:-}" ]]; then
+    echo "    using CMAKE_PREFIX_PATH: $QT_ROOT_DIR"
+    cmake_args+=("-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR")
 elif [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
     cmake_args+=("-DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH")
 fi
+
+# Be explicit about the Ninja binary in case CMake can't auto-locate it.
+if [[ "$GENERATOR" == "Ninja" ]] && command -v ninja >/dev/null 2>&1; then
+    cmake_args+=("-DCMAKE_MAKE_PROGRAM=$(command -v ninja)")
+fi
+
 cmake "${cmake_args[@]}"
 
 echo "==> building test targets"
