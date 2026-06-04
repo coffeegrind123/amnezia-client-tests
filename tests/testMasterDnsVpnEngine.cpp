@@ -1733,7 +1733,11 @@ private slots:
         QCOMPARE(sent.size(), 1);
         QCOMPARE(sent[0].type, PacketType::StreamData);
 
-        // Advance time past RTO so the retransmit fires.
+        // writeApp() carries no clock, so the engine records the send time on
+        // the first tick after the write; a later tick past the RTO then fires
+        // the retransmit. (Sibling tests seed lastSentMs directly to the same
+        // effect.)
+        a.tickMs(1);
         a.tickMs(200);
         QVERIFY(sent.size() >= 2);
         QCOMPARE(sent.last().type, PacketType::StreamResend);
@@ -1743,24 +1747,26 @@ private slots:
     void testArqRetransmitPrioritiesFavorFrontWindow()
     {
         // Upstream: TestARQ_RetransmitPrioritiesFavorFrontWindow (1218).
-        // Seeds three sndBuf entries (95, 100, 90) with sndNxt=100. The
-        // oldest (lowest within the wrap window) gets STREAM_RESEND
-        // priority; the others get STREAM_DATA priority.
+        // §6.5 front-budget priority: scheduleRetransmits() sorts the due
+        // entries by sequence (oldest first) and emits the first
+        // frontBudget(window, jobs) = min(max(window/10,1), 64, jobs) of them
+        // as STREAM_RESEND; the remainder are demoted to STREAM_DATA.
         //
-        // The C++ engine implements front-budget priority via
-        // `frontBudget()` in scheduleRetransmits(). We seed sndBuf
-        // directly and tick past RTO to observe the priority choices.
+        // §6.2 floors windowSize to 300, so the budget is min(30, 64, jobs).
+        // To exercise the demotion we must seed MORE in-flight entries than
+        // the budget: with 35 seeded, the 30 lowest seqs get RESEND priority
+        // and the remaining 5 are demoted to DATA.
         ArqConfig cfg;
-        cfg.windowSize = 10;
+        cfg.windowSize = 10;   // floored to 300 by the ctor → budget 30
         cfg.initialDataRtoMs = 100;
         cfg.maxDataRtoMs = 500;
         QVector<Packet> sent;
         ArqStream a(1, cfg,
                     [&sent](const ArqOutbound &o) { sent.append(o.packet); },
                     [](const ArqDelivery &) {});
-        // Seed sndBuf with seqs 95, 100, 90; firstSentMs already set so
-        // the retransmit loop classifies them as in-flight.
-        for (quint16 seq : {quint16(95), quint16(100), quint16(90)}) {
+
+        const int kSeeded = 35;
+        for (quint16 seq = 1; seq <= kSeeded; ++seq) {
             ArqStream::PendingSend s;
             s.seq = seq;
             s.payload = QByteArrayLiteral("p");
@@ -1769,23 +1775,26 @@ private slots:
             s.lastSentMs = 1;
             a.m_sndBuf.insert(seq, s);
         }
-        a.m_sndNxt = 101;
+        a.m_sndNxt = kSeeded + 1;
 
         a.tickMs(200);
-        // Oldest (seq 90 by numeric order — upstream uses wrap-aware
-        // "oldest in front window" semantics; with sndNxt=101 the
-        // front-budget=1 entry is seq 90) gets RESEND, rest get DATA.
-        QVector<QPair<quint16, PacketType>> emitted;
-        for (const Packet &p : sent) emitted.append({*p.sequenceNum, p.type});
-        // At least the front-budget=1 entry is RESEND, the rest DATA.
+
+        QHash<quint16, PacketType> typeBySeq;
         int resends = 0;
         int datas = 0;
-        for (const auto &e : emitted) {
-            if (e.second == PacketType::StreamResend) ++resends;
-            if (e.second == PacketType::StreamData) ++datas;
+        for (const Packet &p : sent) {
+            typeBySeq.insert(*p.sequenceNum, p.type);
+            if (p.type == PacketType::StreamResend) ++resends;
+            else if (p.type == PacketType::StreamData) ++datas;
         }
-        QCOMPARE(resends, 1);
-        QCOMPARE(datas, 2);
+        // frontBudget(300, 35) = min(30, 64, 35) = 30.
+        QCOMPARE(resends, 30);
+        QCOMPARE(datas, 5);
+        // Front-window favouring: the 30 lowest seqs are the resent ones.
+        QCOMPARE(typeBySeq.value(quint16(1)), PacketType::StreamResend);
+        QCOMPARE(typeBySeq.value(quint16(30)), PacketType::StreamResend);
+        QCOMPARE(typeBySeq.value(quint16(31)), PacketType::StreamData);
+        QCOMPARE(typeBySeq.value(quint16(35)), PacketType::StreamData);
     }
 
     void testArqACKHandling()
@@ -2379,8 +2388,10 @@ private slots:
     void testParseTargetPayloadDomain()
     {
         // Upstream: TestParseTargetPayloadDomain (22).
+        // Split the literal so the \x0B and \x00 hex escapes don't greedily
+        // absorb the following ASCII hex digits ('e' of example, '5' of \x35).
         const QByteArray payload = QByteArray::fromRawData(
-                "\x03\x0Bexample.com\x00\x35", 15);
+                "\x03\x0B" "example.com" "\x00\x35", 15);
         int consumed = 0;
         const auto dest = parseTargetPayload(payload, &consumed);
         QVERIFY(dest.has_value());
