@@ -1,0 +1,59 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      client_ref:
+        description: "amnezia-client ref (branch/tag/sha) to test against"
+        required: false
+        default: "dev"
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      CLIENT_REPO: https://github.com/coffeegrind123/amnezia-client.git
+      CLIENT_REF: ${{ github.event.inputs.client_ref || 'dev' }}
+      BUILD_TYPE: Debug
+      # Run Qt GUI/QML tests without a display.
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Checkout tests repo
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: "6.8.*"
+          host: linux
+          target: desktop
+          arch: gcc_64
+          modules: "qtremoteobjects qt5compat qtshadertools"
+          cache: true
+          aqtversion: "==3.3.0"
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install conan
+        run: pip install "conan==2.26.2"
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libxkbcommon-x11-0 libsecret-1-dev \
+            libgl1-mesa-dev libxcb-cursor0
+
+      - name: Run test suite
+        env:
+          QT_TOOLCHAIN: ${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6/qt.toolchain.cmake
+        run: bash scripts/run-tests.sh

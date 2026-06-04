@@ -1,0 +1,14 @@
+# build / scratch
+.work/
+build*/
+out/
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.user
+
+# python
+__pycache__/
+*.pyc
